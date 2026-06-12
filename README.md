@@ -4,12 +4,18 @@
 
 ## 这是什么
 
+> **⚠️ 前置要求**：要使用本项目，**你的域名必须托管在 Cloudflare (CF)**。
+> - 如果你的域名**本身就是在 CF 购买的**，那没有任何问题，直接使用即可。
+> - 如果你的域名是**在其他服务商（如阿里云、腾讯云、GoDaddy 等）购买的**，也可以免费托管在 CF：只需在原购买处将域名的 DNS 服务器（Name Servers）修改为 CF 提供的 DNS 即可。
+
 家用宽带的动态公网 IP，要解析到固定域名。传统做法是在家里的机器上放一份 CF API Token，定时调 CF API 更新。这个方案有两个缺点：
 
 - Token 一旦泄露，整个 zone 都能被改
 - 多台设备需要分别配置 Token
 
 本项目把 Token 放进 Cloudflare Worker（由 CF 加密托管），家里只需要一个**只能操作白名单域名**的 secret。
+
+> **💡 拓展场景**：这套方案**不仅适用于家庭宽带 DDNS**。对于云服务器（VPS），每次开通新机器或更换 IP 时，只需在机器上跑一次上述的 `curl` 命令，就能瞬间自动完成域名 A 记录的创建与绑定，再也不用手动登录域名管理控制台配置解析了！
 
 ```
 家里设备 ──(HTTPS + secret)──> CF Worker ──(CF API Token)──> 你的 DNS Zone
@@ -33,19 +39,21 @@
 ### 1. 准备 CF API Token
 
 1. 登录 Cloudflare Dashboard
-2. 右上角头像 → **My Profile** → **API Tokens** → **Create Token**
-3. 选择模板 **"Edit zone DNS"**
-4. 配置 Token：
-   - 在 Permissions 区 **+ Add more**，加一行 `Zone` - `Zone` - `Read`（自动反查 zone_id 需要）
-   - Zone Resources：`Include` - `Specific zone` → 勾选所有要管理的 zone（可多选）
+2. 左侧 管理账户 → **账户API令牌** → **创建令牌**
+3. 选择模板 **"DNS & Zones"**
+4. DNS 勾选 `Read`、`Edit`，Zone 勾选 `Read`
 5. 保存 Token，只显示一次并妥善保存。
+![token1](images/token1.png)
+![token2](images/token2.png)
 
 ### 2. 生成 SHARED_SECRET
 
-生成一串高熵字符串，后续 Worker 和客户端都要用到：
+生成一串字符串作为凭证，后续 Worker 和客户端都要用到：
 ```bash
+# 推荐做法：生成 32 位高熵字符串
 openssl rand -hex 32
 ```
+> **提示**：这里并没有强制要求必须是 32 位，如果你不考虑安全性，甚至随便输入 `123` 也是可以的，**但一定要妥善保存下来**，因为客户端调用时必须与 Worker 配置的完全一致。
 
 ### 3. 部署 Worker
 
@@ -121,6 +129,27 @@ GET   https://<worker-url>/      (兼容简单场景)
 | `name` | 否 | string | 要更新的完整域名（Query参数）；不传则使用 `ALLOWED_DOMAINS` 的首个域名 |
 | `ip` | 否 | string | 显式 IP（Query参数）；不传则使用 Worker 自动获取的 `CF-Connecting-IP` |
 | `secret`| 是 | string | 可通过 Header `X-DDNS-Secret` 或 Query参数 `?secret=` 传递 |
+
+**调用示例：**
+
+1. **仅指定域名，自动获取 IP (POST)**
+```bash
+curl -X POST "https://ddns-relay.your-subdomain.workers.dev?name=nas.example.com" \
+     -H "X-DDNS-Secret: 你的_SHARED_SECRET"
+```
+
+2. **同时指定域名和明确的 IP (POST)**
+```bash
+curl -X POST "https://ddns-relay.your-subdomain.workers.dev?name=nas.example.com&ip=1.2.3.4" \
+     -H "X-DDNS-Secret: 你的_SHARED_SECRET"
+```
+
+3. **使用 GET 请求 (适合不支持 POST 的简单客户端)**
+```bash
+curl -G "https://ddns-relay.your-subdomain.workers.dev?name=nas.example.com" \
+     -H "X-DDNS-Secret: 你的_SHARED_SECRET"
+```
+*(注：如果某些受限环境连 Header 都不支持自定义，也可以将 Secret 放在 URL 参数中直接请求：`...&secret=你的_SHARED_SECRET`)*
 
 **成功响应示例：**
 ```json
